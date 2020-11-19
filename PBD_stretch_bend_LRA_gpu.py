@@ -6,7 +6,7 @@ import numpy as np
 from math import sqrt
 
 nb.init()
-ti.init(arch=ti.cpu, debug=False)
+ti.init(arch=ti.gpu, debug=False)
 
 
 # Get the active mesh
@@ -20,7 +20,6 @@ c_obj = bpy.data.objects["Sphere"]
 
 attach = [ v.index for v in me.vertices if attach_index in [ vg.group for vg in v.groups ] ]
 
-
 # Get a BMesh representation
 bm = bmesh.new()   # create an empty BMesh
 bm.from_mesh(me)   # fill it in from a Mesh
@@ -29,17 +28,17 @@ edge_num = len(bm.edges)
 face_num = len(bm.faces)
 link_num = edge_num + face_num * 2
 attach_num = len(attach)
-substep_num = 15
-solver_num = 30
+substep_num = 10
+solver_num = 20
 dt = 1e-3
 drag_damping = 1
-#k = 0.9
+
 coll_r = 1.01
+k_stretch = 0.9
+k_bend = 0.7
+k_LRA = 0.4
 tether_give = 0.2
 eps = 1e-3
-
-
-
 
 
 x = ti.Vector.field(3, dtype=ti.f32, shape=vertex_num)
@@ -72,7 +71,7 @@ def set_faces():
         for j in ti.static(range(2)):
             link[link_idx[None]] = ti.Vector([v[0+j].index, v[1+j].index])
             link_len[link_idx[None]] = calc_dist(v[0+j].co, v[1+j].co)
-            link_k[link_idx[None]] = 0.7
+            link_k[link_idx[None]] = k_bend
             link_idx[None] += 1
         
         
@@ -81,7 +80,7 @@ def set_edges():
         e = bm.edges[link_idx[None]]
         link[link_idx[None]] = ti.Vector([e.verts[0].index, e.verts[1].index])
         link_len[link_idx[None]] = e.calc_length()
-        link_k[link_idx[None]] = 0.9
+        link_k[link_idx[None]] = k_stretch
         link_idx[None] += 1
 
 def set_attachments():
@@ -125,15 +124,14 @@ def substep():
         v[i] *= ti.exp(-dt * drag_damping)
         p[i] = x[i] + dt * v[i]
 
-    for n in range(solver_num):
+    for n in ti.static(range(solver_num)):
         for vi in range(vertex_num):
             for att in range(attach_num):
                 if w[vi] > eps:
                     dist = (p[vi] - attach_pos[att]).norm()
-                    dist_diff = dist - tether_len[vi,att]
-                    if dist_diff > tether_give:
-                        dp = -0.5 * w[vi] * dist_diff * (p[vi] - attach_pos[att]) / dist
-                        p[vi] += 0.6 * dp
+                    if dist > (1 + tether_give) * tether_len[vi,att]:
+                        dp = -0.5 * w[vi] * (dist - tether_len[vi,att]) * (p[vi] - attach_pos[att]) / dist
+                        p[vi] += k_LRA * dp
         #    if w[vi] > eps and dist - coll_r < 0:
         # print(attach[0])
 
@@ -172,7 +170,7 @@ init()
 
 @nb.add_animation
 def main():  
-    for frame in range(1, 2500):
+    for frame in range(2500):
         yield nb.mesh_update(me, x.to_numpy().reshape(vertex_num,3))   
         #s = 1
         for step in range(substep_num):
@@ -182,4 +180,3 @@ def main():
             coll_origin[0].y = c_obj.location[1]
             coll_origin[0].z = c_obj.location[2]
             substep()
-
